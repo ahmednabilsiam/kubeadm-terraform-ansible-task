@@ -1,0 +1,86 @@
+name: Deploy Kubernetes Cluster
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_DEFAULT_REGION: eu-central-1
+  ANSIBLE_HOST_KEY_CHECKING: "False"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Get runner public IP
+        id: ip
+        run: echo "cidr=$(curl -s https://checkip.amazonaws.com)/32" >> $GITHUB_OUTPUT
+
+      - name: Terraform init
+        run: terraform init
+
+      - name: Terraform apply
+        run: terraform apply -auto-approve -var="ssh_allowed_cidr=${{ steps.ip.outputs.cidr }}"
+
+      - name: Setup SSH key
+        env:
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          printf '%s\n' "$SSH_KEY" > ~/docker-task-key.pem
+          chmod 400 ~/docker-task-key.pem
+
+      - name: Generate Ansible inventory
+        run: |
+          BASTION=$(terraform output -raw bastion_public_ip)
+          MASTER=$(terraform output -raw master_private_ip)
+          W1=$(terraform output -raw worker_1_private_ip)
+          W2=$(terraform output -raw worker_2_private_ip)
+          cat > ansible/inventory.ini <<EOF
+          [master]
+          master1 ansible_host=$MASTER
+
+          [workers]
+          worker1 ansible_host=$W1
+          worker2 ansible_host=$W2
+
+          [k8s:children]
+          master
+          workers
+
+          [k8s:vars]
+          ansible_user=ubuntu
+          ansible_ssh_private_key_file=$HOME/docker-task-key.pem
+          ansible_ssh_common_args=-o StrictHostKeyChecking=no -o ProxyCommand="ssh -i $HOME/docker-task-key.pem -o StrictHostKeyChecking=no -W %h:%p -q ubuntu@$BASTION"
+          EOF
+
+      - name: Install Ansible
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install ansible
+
+      - name: Wait for nodes to accept SSH
+        working-directory: ansible
+        run: |
+          for i in $(seq 1 20); do
+            ansible k8s -m ping && exit 0
+            echo "Nodes not ready, retry $i/20"
+            sleep 15
+          done
+          exit 1
+
+      - name: Run Ansible playbook
+        working-directory: ansible
+        run: ansible-playbook playbook.yml

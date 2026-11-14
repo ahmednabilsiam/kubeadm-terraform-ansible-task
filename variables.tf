@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "aws_profile" {
   description = "AWS CLI profile"
   type        = string
-  default     = "terraform"
+  default     = null
 }
 
 variable "project_name" {
