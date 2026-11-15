@@ -2,8 +2,13 @@ name: Deploy Kubernetes Cluster
 
 on:
   push:
-    branches: [main]
+    paths-ignore:
+      - "**.md"
   workflow_dispatch:
+
+concurrency:
+  group: deploy-k8s
+  cancel-in-progress: false
 
 env:
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
